@@ -1,0 +1,44 @@
+import { test, expect } from '@playwright/test';
+const device = { _id: '507f1f77bcf86cd799439012', name: 'Laptop yêu thích', assetCode: 'LT-01', status: 'available', category: { name: 'Máy tính' }, rentalPricePerDay: 150000, depositAmount: 1000000 };
+test('favorites persist on reload, remove from list, and fit mobile', async ({ page }) => {
+  let saved = true;
+  await page.addInitScript(() => sessionStorage.setItem('techrental-access-token', 'test-token'));
+  await page.route('**/api/v1/auth/me', route => route.fulfill({ json: { user: { fullName: 'Khách hàng', role: 'renter' } } }));
+  await page.route('**/api/v1/favorites/ids', route => route.fulfill({ json: { data: saved ? [device._id] : [] } }));
+  await page.route('**/api/v1/favorites?*', route => route.fulfill({ json: { data: saved ? [device] : [], pagination: { total: saved ? 1 : 0, totalPages: saved ? 1 : 0 } } }));
+  await page.route(`**/api/v1/favorites/${device._id}`, route => { saved = route.request().method() === 'PUT'; return route.fulfill({ json: { data: { saved } } }); });
+  await page.route(`**/api/v1/devices/${device._id}`, route => route.fulfill({ json: { data: device } }));
+  await page.route('**/api/v1/devices?*', route => route.fulfill({ json: { data: [], pagination: { total: 0 } } }));
+  await page.goto(`/thiet-bi/${device._id}`);
+  const remove = page.getByRole('button', { name: `Bỏ yêu thích ${device.name}` });
+  await expect(remove).toHaveAttribute('aria-pressed', 'true');
+  await remove.click();
+  const save = page.getByRole('button', { name: `Lưu yêu thích ${device.name}` });
+  await expect(save).toHaveAttribute('aria-pressed', 'false');
+  await save.click();
+  await expect(remove).toHaveAttribute('aria-pressed', 'true');
+  await page.goto('/yeu-thich');
+  await expect(page.getByRole('heading', { name: device.name })).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole('button', { name: `Bỏ yêu thích ${device.name}` })).toHaveAttribute('aria-pressed', 'true');
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.getByRole('button', { name: `Bỏ yêu thích ${device.name}` }).click();
+  await expect(page.getByRole('heading', { name: 'Chưa có thiết bị yêu thích' })).toBeVisible();
+});
+test('anonymous visitors see login invitation', async ({ page }) => {
+  await page.goto('/yeu-thich');
+  await expect(page.getByRole('heading', { name: 'Đăng nhập để lưu thiết bị yêu thích' })).toBeVisible();
+});
+test('logout clears favorites immediately', async ({ page }) => {
+  await page.addInitScript(() => sessionStorage.setItem('techrental-access-token', 'test-token'));
+  await page.route('**/api/v1/auth/me', route => route.fulfill({ json: { user: { fullName: 'Khách hàng', role: 'renter' } } }));
+  await page.route('**/api/v1/favorites/ids', route => route.fulfill({ json: { data: [device._id] } }));
+  await page.route('**/api/v1/favorites?*', route => route.fulfill({ json: { data: [device], pagination: { total: 1, totalPages: 1 } } }));
+  await page.goto('/yeu-thich');
+  await expect(page.getByRole('heading', { name: device.name })).toBeVisible();
+  await page.getByRole('button', { name: 'Mở menu tài khoản' }).click();
+  await page.getByRole('button', { name: 'Đăng xuất' }).click();
+  await expect(page.getByRole('heading', { name: 'Đăng nhập để lưu thiết bị yêu thích' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: device.name })).toHaveCount(0);
+});

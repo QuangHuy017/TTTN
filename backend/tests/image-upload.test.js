@@ -1,0 +1,64 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import request from 'supertest';
+import app from '../src/app.js';
+import User from '../src/models/User.js';
+import Device from '../src/models/Device.js';
+import Category from '../src/models/Category.js';
+import { signAccessToken } from '../src/utils/token.js';
+import { env } from '../src/config/env.js';
+import { imageReceipt, verifyImageReceipt } from '../src/services/image.service.js';
+import { parseDevice } from '../src/routes/admin.routes.js';
+
+env.jwtSecret = 'image-upload-test-secret-12345678901234567890';
+const user = { _id: '507f1f77bcf86cd799439011', role: 'admin', isActive: true };
+const image = { url: 'https://res.cloudinary.com/test-cloud/image/upload/image.png', publicId: 'techrental/devices/test', originalName: 'image.png', width: 1, height: 1 };
+const body = { name: 'Laptop', assetCode: 'TEST-01', category: user._id, status: 'available', rentalPricePerDay: 100000 };
+const auth = call => call.set('Authorization', `Bearer ${signAccessToken(user)}`);
+test('image upload requires admin before accepting file bytes', async t => {
+  t.mock.method(User, 'findById', async () => ({ ...user, role: 'renter' }));
+  assert.equal((await request(app).post('/api/v1/admin/device-images').set('Content-Type', 'image/png').send(Buffer.from('test'))).status, 401);
+  assert.equal((await auth(request(app).post('/api/v1/admin/device-images')).set('Content-Type', 'image/png').send(Buffer.from('test'))).status, 403);
+});
+test('upload validates bytes, uploads to Cloudinary and returns a verifiable receipt', async t => {
+  t.mock.method(User, 'findById', async () => user);
+  const oldUrl = process.env.CLOUDINARY_URL;
+  process.env.CLOUDINARY_URL = 'cloudinary://test-key:test-secret@test-cloud';
+  t.after(() => { if (oldUrl === undefined) delete process.env.CLOUDINARY_URL; else process.env.CLOUDINARY_URL = oldUrl; });
+  t.mock.method(globalThis, 'fetch', async (_url, options) => ({ ok: true, json: async () => ({ secure_url: image.url, public_id: options.body.get('public_id'), width: 1, height: 1 }) }));
+  const invalid = await auth(request(app).post('/api/v1/admin/device-images')).set('Content-Type', 'image/png').send(Buffer.from('<script>invalid</script>'));
+  assert.equal(invalid.status, 400);
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jS1kAAAAASUVORK5CYII=', 'base64');
+  const result = await auth(request(app).post('/api/v1/admin/device-images')).set('Content-Type', 'image/png').set('X-File-Name', encodeURIComponent('ảnh.png')).send(png);
+  assert.equal(result.status, 201);
+  assert.equal(result.body.data.originalName, 'ảnh.png');
+  assert.equal(verifyImageReceipt(result.body.data.uploadToken, user._id).url, image.url);
+  assert.throws(() => verifyImageReceipt(result.body.data.uploadToken, 'another-admin'), error => error.status === 400);
+  const large = await auth(request(app).post('/api/v1/admin/device-images')).set('Content-Type', 'image/png').send(Buffer.alloc(10 * 1024 * 1024 + 1));
+  assert.equal(large.status, 413);
+});
+test('device save persists verified uploaded images and rejects arbitrary URLs', async t => {
+  t.mock.method(User, 'findById', async () => user);
+  t.mock.method(Category, 'exists', async () => ({ _id: user._id }));
+  const create = t.mock.method(Device, 'create', async data => ({ _id: user._id, ...data }));
+  const save = images => auth(request(app).post('/api/v1/admin/devices')).send({ ...body, images });
+  assert.equal((await save([{ publicId: 'forged', url: 'https://example.com/image.png' }])).status, 400);
+  const result = await save([{ publicId: image.publicId, url: 'https://example.com/forged.png', uploadToken: imageReceipt(image, user._id) }]);
+  assert.equal(result.status, 201);
+  assert.deepEqual(create.mock.calls[0].arguments[0].images, [image]);
+  assert.equal(create.mock.calls[0].arguments[0].depositAmount, undefined);
+  assert.equal(create.mock.calls[0].arguments[0].location, undefined);
+});
+test('editing preserves existing image metadata and accepts omitted deposit and location', async t => {
+  t.mock.method(User, 'findById', async () => user);
+  t.mock.method(Category, 'exists', async () => ({ _id: user._id }));
+  t.mock.method(Device, 'findById', () => ({ select: () => ({ lean: async () => ({ images: [image] }) }) }));
+  const update = t.mock.method(Device, 'findOneAndUpdate', async (filter, changes) => ({ _id: filter._id, ...changes.$set }));
+  const result = await auth(request(app).patch(`/api/v1/admin/devices/${user._id}`)).send({ ...body, images: [{ publicId: image.publicId }] });
+  assert.equal(result.status, 200);
+  const changes = update.mock.calls[0].arguments[1].$set;
+  assert.deepEqual(changes.images, [image]);
+  assert.equal(Object.hasOwn(changes, 'depositAmount'), false);
+  assert.equal(Object.hasOwn(changes, 'location'), false);
+  assert.equal(Object.hasOwn(parseDevice(body), 'depositAmount'), false);
+});

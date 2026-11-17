@@ -1,0 +1,34 @@
+import { test, expect } from '@playwright/test';
+test('account dropdown groups links, closes accessibly, updates name and logs out', async ({ page }) => {
+  let user = { fullName: 'Nguyễn Văn An', email: 'an@example.com', role: 'renter' };
+  await page.addInitScript(() => sessionStorage.setItem('techrental-access-token', 'test-token'));
+  await page.route('**/api/v1/auth/me', route => {
+    if (route.request().method() === 'PATCH') user = { ...user, ...route.request().postDataJSON() };
+    return route.fulfill({ json: { user } });
+  });
+  await page.goto('/tai-khoan');
+  const trigger = page.getByRole('button', { name: 'Mở menu tài khoản' });
+  await expect(trigger).toBeVisible();
+  await expect(page.getByRole('navigation', { name: 'Menu tài khoản' })).toHaveCount(0);
+  await trigger.click();
+  const menu = page.getByRole('navigation', { name: 'Menu tài khoản' });
+  for (const name of ['Đơn hàng của tôi', 'Thiết bị yêu thích', 'Quản lý tài khoản']) await expect(menu.getByRole('link', { name, exact: true })).toBeVisible();
+  await expect(menu.getByRole('button', { name: 'Đăng xuất' })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(menu).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+  await trigger.click();
+  await page.getByRole('heading', { name: 'Quản lý tài khoản', exact: true }).click();
+  await expect(menu).toHaveCount(0);
+  await page.getByLabel('Họ và tên', { exact: true }).fill('Nguyễn Văn Bình');
+  await page.getByRole('button', { name: 'Lưu thay đổi' }).click();
+  await expect(page.getByRole('status')).toContainText('Đã lưu thông tin tài khoản');
+  await expect(page.locator('.auth-greeting')).toHaveText('Nguyễn Văn Bình');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await trigger.click();
+  await expect(menu).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await menu.getByRole('button', { name: 'Đăng xuất' }).click();
+  await expect(page.getByRole('heading', { name: 'Đăng nhập để quản lý tài khoản' })).toBeVisible();
+  await expect(page.locator('.auth-actions').getByRole('link', { name: 'Đăng nhập' })).toBeVisible();
+});

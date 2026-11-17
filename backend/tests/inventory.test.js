@@ -1,0 +1,54 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import mongoose from 'mongoose';
+import Device from '../src/models/Device.js';
+import RentalRequest from '../src/models/RentalRequest.js';
+import BorrowRequest from '../src/models/BorrowRequest.js';
+import { inventoryOf, peakQuantity } from '../src/services/inventory.service.js';
+import { performRentalAction } from '../src/services/rental-workflow.service.js';
+import { parseDevice } from '../src/routes/admin.routes.js';
+const id = '507f1f77bcf86cd799439011', deviceId = '507f1f77bcf86cd799439012';
+const input = { _id: id, device: deviceId, status: 'pending', quantity: 5, startAt: new Date('2030-01-01'), endAt: new Date('2030-01-10') };
+const query = data => ({ select() { return this; }, session() { return this; }, lean: async () => data });
+test('inventory preserves legacy single assets and validates integer warehouse quantities', () => {
+  assert.deepEqual(inventoryOf({ status: 'available' }), { stockQuantity: 1, rentedQuantity: 0 });
+  assert.deepEqual(inventoryOf({ status: 'borrowed' }), { stockQuantity: 0, rentedQuantity: 1 });
+  assert.deepEqual(inventoryOf({ status: 'available', stockQuantity: 45, rentedQuantity: 5 }), { stockQuantity: 45, rentedQuantity: 5 });
+  const body = { name: 'Laptop', assetCode: 'TEST', category: id, status: 'available', rentalPricePerDay: 100000 };
+  assert.equal(parseDevice({ ...body, stockQuantity: 45 }).stockQuantity, 45);
+  for (const stockQuantity of [-1, 2.5, '45', null, 1000001]) assert.throws(() => parseDevice({ ...body, stockQuantity }), error => error.status === 400);
+});
+test('peak capacity uses maximum simultaneous rentals rather than summing disjoint bookings', () => {
+  const bookings = [{ quantity: 25, startAt: '2030-01-01', endAt: '2030-01-05' }, { quantity: 25, startAt: '2030-01-05', endAt: '2030-01-10' }];
+  assert.equal(peakQuantity(bookings), 25);
+  assert.equal(peakQuantity([...bookings, { quantity: 10, startAt: '2030-01-02', endAt: '2030-01-06' }]), 35);
+  assert.equal(peakQuantity(bookings, '2030-01-11', '2030-01-12'), 0);
+});
+test('45 in warehouse becomes 40 when delivering 5, then returns to 45', async t => {
+  const order = { ...input }, device = { _id: deviceId, status: 'available', isPublished: true, stockQuantity: 45, rentedQuantity: 0 };
+  t.mock.method(mongoose.connection, 'transaction', async callback => callback({}));
+  t.mock.method(RentalRequest, 'findById', () => ({ session: async () => ({ ...order }) }));
+  t.mock.method(Device, 'findOneAndUpdate', async () => ({ ...device }));
+  t.mock.method(RentalRequest, 'find', () => query([]));
+  t.mock.method(BorrowRequest, 'find', () => query([]));
+  t.mock.method(RentalRequest, 'findOneAndUpdate', async (_filter, changes) => { Object.assign(order, changes.$set); return { ...order }; });
+  t.mock.method(Device, 'updateOne', async (_filter, changes) => { Object.assign(device, changes.$set); return { modifiedCount: 1 }; });
+  await performRentalAction(id, 'approve', 'admin');
+  assert.equal(device.stockQuantity, 45);
+  await performRentalAction(id, 'handover', 'admin');
+  assert.equal(device.stockQuantity, 40); assert.equal(device.rentedQuantity, 5); assert.equal(device.status, 'available');
+  await performRentalAction(id, 'return', 'admin');
+  assert.equal(device.stockQuantity, 45); assert.equal(device.rentedQuantity, 0);
+  await assert.rejects(performRentalAction(id, 'return', 'admin'), error => error.status === 409);
+  assert.equal(device.stockQuantity, 45);
+});
+test('overlapping approved quantities cannot exceed a pool of 45', async t => {
+  t.mock.method(mongoose.connection, 'transaction', async callback => callback({}));
+  t.mock.method(RentalRequest, 'findById', () => ({ session: async () => ({ ...input, quantity: 10 }) }));
+  t.mock.method(Device, 'findOneAndUpdate', async () => ({ _id: deviceId, status: 'available', stockQuantity: 45, rentedQuantity: 0 }));
+  t.mock.method(RentalRequest, 'find', () => query([{ ...input, _id: deviceId, quantity: 40 }]));
+  t.mock.method(BorrowRequest, 'find', () => query([]));
+  const update = t.mock.method(RentalRequest, 'findOneAndUpdate', async () => null);
+  await assert.rejects(performRentalAction(id, 'approve', 'admin'), error => error.status === 409);
+  assert.equal(update.mock.calls.length, 0);
+});

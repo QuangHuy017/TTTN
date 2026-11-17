@@ -1,0 +1,44 @@
+import { test, expect } from '@playwright/test';
+test('login validates credentials, toggles password and shows server errors', async ({ page }) => {
+  await page.route('**/api/v1/auth/login', route => route.fulfill({ status: 401, json: { message: 'Invalid email or password' } }));
+  await page.goto('/dang-nhap');
+  await page.getByLabel('Email', { exact: false }).fill('an@example.com');
+  await page.locator('#auth-password').fill('password123');
+  await page.getByRole('button', { name: 'Hiện mật khẩu' }).click();
+  await expect(page.locator('#auth-password')).toHaveAttribute('type', 'text');
+  await page.getByRole('button', { name: 'Đăng nhập', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('Email hoặc mật khẩu không đúng');
+});
+test('registration checks password confirmation and logs in after success', async ({ page }) => {
+  let sent;
+  await page.route('**/api/v1/auth/register', route => { sent = route.request().postDataJSON(); return route.fulfill({ status: 201, json: { accessToken: 'test-token', user: { fullName: 'Nguyễn Văn An' } } }); });
+  await page.route('**/api/v1/auth/me', route => route.fulfill({ json: { user: { fullName: 'Nguyễn Văn An' } } }));
+  await page.route('**/api/v1/categories', route => route.fulfill({ json: { data: [] } }));
+  await page.route('**/api/v1/devices?*', route => route.fulfill({ json: { data: [], pagination: { total: 0 } } }));
+  await page.goto('/dang-ky');
+  await page.getByLabel('Họ và tên').fill('Nguyễn Văn An');
+  await page.getByLabel('Email').fill('an@example.com');
+  await page.locator('#auth-password').fill('password123');
+  await page.getByLabel('Xác nhận mật khẩu').fill('different123');
+  await page.getByRole('button', { name: 'Tạo tài khoản', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('chưa khớp');
+  expect(sent).toBeUndefined();
+  await page.getByLabel('Xác nhận mật khẩu').fill('password123');
+  await page.getByRole('button', { name: 'Tạo tài khoản', exact: true }).click();
+  await expect(page).toHaveURL(/thiet-bi$/);
+  await expect(page.locator('.auth-greeting')).toContainText('Nguyễn Văn An');
+  expect(sent.fullName).toBe('Nguyễn Văn An');
+  expect(sent.confirmPassword).toBeUndefined();
+  await page.getByRole('button', { name: 'Mở menu tài khoản' }).click();
+  await page.getByRole('button', { name: 'Đăng xuất' }).click();
+  await expect(page.locator('.auth-actions').getByRole('link', { name: 'Đăng nhập' })).toBeVisible();
+});
+test('authentication pages fit mobile and switch between login and registration', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/dang-nhap');
+  await page.getByRole('link', { name: 'Đăng ký ngay' }).click();
+  await expect(page.getByRole('heading', { name: 'Tạo tài khoản của bạn' })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.reload();
+  await expect(page.getByLabel('Xác nhận mật khẩu')).toBeVisible();
+});

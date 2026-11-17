@@ -1,0 +1,42 @@
+﻿@baseUrl = http://localhost:5000/api/v1
+
+### Health check
+GET {{baseUrl}}/health
+
+### Unknown API
+GET {{baseUrl}}/unknown
+
+### Categories
+GET {{baseUrl}}/categories
+
+### Search, price and pagination
+GET {{baseUrl}}/devices?q=DEMO&minPrice=100000&maxPrice=300000&page=1&limit=5&sort=price_asc
+
+### Configuration filters
+GET {{baseUrl}}/devices?spec.RAM=16%20GB&spec.CPU=i5
+
+### Search any configuration value
+GET {{baseUrl}}/devices?configuration=Full%20HD
+
+### Register renter (use your own password)
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{"fullName":"Test Renter","email":"renter@example.com","password":"ReplaceWithYourPassword123"}
+
+### Login
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{"email":"renter@example.com","password":"ReplaceWithYourPassword123"}
+
+### Current account (paste accessToken below)
+GET {{baseUrl}}/auth/me
+Authorization: Bearer PASTE_ACCESS_TOKEN
+
+### Admin creates staff
+POST {{baseUrl}}/users
+Authorization: Bearer PASTE_ADMIN_ACCESS_TOKEN
+Content-Type: application/json
+
+{"fullName":"Staff User","email":"staff@example.com","password":"ReplaceWithYourPassword123","role":"staff"}
